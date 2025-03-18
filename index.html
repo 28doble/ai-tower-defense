@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tower Defense</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+        }
+        .ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-family: Arial;
+        }
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+        }
+        .upgrade-menu {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        .upgrade-option {
+            margin: 5px 0;
+            padding: 5px;
+            cursor: pointer;
+            border: 1px solid #555;
+        }
+        .upgrade-option:hover {
+            background: #333;
+        }
+        #devGUI {
+            position: absolute;
+            top: 50px;
+            left: 10px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .dev-section {
+            margin: 10px 0;
+        }
+        .dev-input {
+            width: 80px;
+            margin: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="ui">
+        <div>Wave: <span id="wave">0</span></div>
+        <div>Health: <span id="health">100</span></div>
+        <div>Money: $<span id="money">500</span></div>
+    </div>
+    <div class="controls">
+        <button id="startWave">Start Wave</button>
+        <button id="pause">Pause</button>
+        <div style="margin-top: 5px;">
+            <label>
+                <input type="checkbox" id="autoStart"> Auto Start
+            </label>
+        </div>
+    </div>
+    <div id="upgradeMenu" class="upgrade-menu"></div>
+    <div id="devGUI">
+        <h3 style="margin:0 0 10px 0;">Developer Controls</h3>
+        <div class="dev-section">
+            Money: 
+            <input type="number" id="devMoney" class="dev-input" value="1000">
+            <button onclick="addMoney()">Add</button>
+            <button onclick="setMoney()">Set</button>
+        </div>
+        <div class="dev-section">
+            Wave: 
+            <input type="number" id="devWave" class="dev-input" value="1">
+            <button onclick="setWave()">Set</button>
+        </div>
+        <div class="dev-section">
+            <button onclick="healBase()">Heal Base to Full</button>
+        </div>
+    </div>
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+
+    <script>
+        function getVariedColor(baseColor) {
+            let r = parseInt(baseColor.substr(1, 2), 16);
+            let g = parseInt(baseColor.substr(3, 2), 16);
+            let b = parseInt(baseColor.substr(5, 2), 16);
+
+            r = Math.min(255, Math.max(0, r + Math.floor(Math.random() * 41 - 20)));
+            g = Math.min(255, Math.max(0, g + Math.floor(Math.random() * 41 - 20)));
+            b = Math.min(255, Math.max(0, b + Math.floor(Math.random() * 41 - 20)));
+
+            return '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('');
+        }
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const moneySpan = document.getElementById('money');
+        const healthSpan = document.getElementById('health');
+        const waveSpan = document.getElementById('wave');
+        const upgradeMenu = document.getElementById('upgradeMenu');
+        const devGUI = document.getElementById('devGUI');
+        const autoStartCheckbox = document.getElementById('autoStart');
+
+        // Game state
+        let money = 500;
+        let health = 100;
+        let currentWave = 0;
+        let isPaused = false;
+        let placingTower = null;
+        let hoveredTile = null;
+        let hoveredEnemy = null;
+        let waveInProgress = false;
+        let selectedTower = null;
+        const particles = [];
+        const allies = [];
+
+        // Game objects
+        const towers = [];
+        const enemies = [];
+        const projectiles = [];
+        
+        // Path configuration
+        const waypoints = [
+            {x: -50, y: 250}, // Enemy spawn
+            {x: 150, y: 250}, {x: 150, y: 100},
+            {x: 350, y: 100}, {x: 350, y: 400},
+            {x: 550, y: 400}, {x: 550, y: 250},
+            {x: 800, y: 250} // Player base
+        ];
+
+        // Tower types
+        const TOWER_TYPES = {
+            basic: {
+                cost: 100,
+                baseRange: 120,
+                baseDamage: 2,
+                baseFireRate: 1000,
+                color: '#3498db',
+                upgradeCost: 50
+            },
+            sniper: {
+                cost: 200,
+                baseRange: 200,
+                baseDamage: 5,
+                baseFireRate: 2000,
+                color: '#2ecc71',
+                upgradeCost: 75
+            },
+            rocket: {
+                cost: 300,
+                baseRange: 150,
+                baseDamage: 8,
+                baseFireRate: 3000,
+                color: '#e67e22',
+                upgradeCost: 100,
+                blastRadius: 50
+            },
+            piercing: {
+                cost: 250,
+                baseRange: 180,
+                baseDamage: 3,
+                baseFireRate: 1500,
+                color: '#9b59b6',
+                upgradeCost: 80,
+                pierceCount: 3
+            },
+            barracks: {
+                cost: 400,
+                baseRange: 0,
+                baseDamage: 0,
+                baseFireRate: 5000,
+                color: '#8B4513',
+                upgradeCost: 150,
+                soldierHealth: 15,
+                soldierDamage: 2,
+                soldierSpeed: 120,
+                spawnRateCost: 75,
+                healthCost: 100,
+                speedCost: 100
+            }
+        };
+
+        class Particle {
+            constructor(x, y, options = {}) {
+                this.x = x;
+                this.y = y;
+                this.velocity = options.velocity || {
+                    x: (Math.random() - 0.5) * 200,
+                    y: (Math.random() - 0.5) * 200
+                };
+                this.radius = options.size || 3;
+                this.life = 1;
+                this.decay = options.decay || 0.5;
+                this.color = options.color || '#f1c40f';
+            }
+
+            update(deltaTime) {
+                this.x += this.velocity.x * deltaTime;
+                this.y += this.velocity.y * deltaTime;
+                this.life -= this.decay * deltaTime;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.life;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        class Tower {
+            constructor(x, y, type) {
+                this.x = x;
+                this.y = y;
+                this.type = type;
+                this.level = {
+                    damage: 1,
+                    fireRate: 1,
+                    range: 1,
+                    soldierHealth: 1,
+                    soldierSpeed: 1
+                };
+                this.updateStats();
+                this.lastShot = 0;
+                this.selected = false;
+
+                this.spawnWaypoint = waypoints[waypoints.length - 1];
+            }
+
+            updateStats() {
+                const base = TOWER_TYPES[this.type];
+                
+                if(this.type === 'barracks') {
+                    this.range = base.baseRange;
+                    this.fireRate = base.baseFireRate / (1 + (this.level.fireRate - 1) * 0.4);
+                    this.soldierHealth = base.soldierHealth * (1 + (this.level.soldierHealth - 1) * 0.5);
+                    this.soldierSpeed = base.soldierSpeed * (1 + (this.level.soldierSpeed - 1) * 0.3);
+                    this.upgradeCosts = {
+                        fireRate: base.spawnRateCost * this.level.fireRate,
+                        soldierHealth: base.healthCost * this.level.soldierHealth,
+                        soldierSpeed: base.speedCost * this.level.soldierSpeed
+                    };
+                } else {
+                    this.range = base.baseRange * (1 + (this.level.range - 1) * 0.2);
+                    this.damage = base.baseDamage * (1 + (this.level.damage - 1) * 0.5);
+                    this.fireRate = base.baseFireRate / (1 + (this.level.fireRate - 1) * 0.3);
+                    this.upgradeCost = base.upgradeCost * (this.level.damage + this.level.fireRate + this.level.range - 2);
+                }
+
+                if(this.type === 'rocket') {
+                    this.blastRadius = base.blastRadius;
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = this.selected ? '#f1c40f' : TOWER_TYPES[this.type].color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 15, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'white';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(`Lv.${this.getTotalLevel()}`, this.x, this.y + 5);
+
+                if (this.selected && this.type === 'rocket') {
+                    ctx.strokeStyle = 'rgba(230, 126, 34, 0.3)';
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.blastRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            getTotalLevel() {
+                if(this.type === 'barracks') {
+                    return this.level.fireRate + this.level.soldierHealth + this.level.soldierSpeed - 2;
+                }
+                return this.level.damage + this.level.fireRate + this.level.range - 2;
+            }
+
+            update(deltaTime) {
+                if (this.type === 'barracks') {
+                    if (Date.now() - this.lastShot > this.fireRate) {
+                        this.spawnSoldier();
+                        this.lastShot = Date.now();
+                    }
+                } else {
+                    if (Date.now() - this.lastShot > this.fireRate) {
+                        const target = this.findTarget();
+                        if (target) {
+                            this.shoot(target);
+                            this.createMuzzleFlash();
+                            this.lastShot = Date.now();
+                        }
+                    }
+                }
+            }
+
+            createMuzzleFlash() {
+                for(let i = 0; i < 8; i++) {
+                    particles.push(new Particle(
+                        this.x,
+                        this.y,
+                        {
+                            color: getVariedColor(TOWER_TYPES[this.type].color),
+                            size: 3 + Math.random() * 2,
+                            decay: 1.0,
+                            velocity: {
+                                x: (Math.random() - 0.5) * 200,
+                                y: (Math.random() - 0.5) * 200
+                            }
+                        }
+                    ));
+                }
+            }
+
+            findTarget() {
+                for (const enemy of enemies) {
+                    const dx = enemy.x - this.x;
+                    const dy = enemy.y - this.y;
+                    if (Math.sqrt(dx*dx + dy*dy) < this.range) {
+                        return enemy;
+                    }
+                }
+                return null;
+            }
+
+            shoot(target) {
+                switch(this.type) {
+                    case 'rocket':
+                        projectiles.push(new RocketProjectile(
+                            this.x,
+                            this.y,
+                            target,
+                            this.damage,
+                            this.blastRadius
+                        ));
+                        break;
+                    case 'piercing':
+                        projectiles.push(new PiercingProjectile(
+                            this.x,
+                            this.y,
+                            target,
+                            this.damage,
+                            this.pierceCount
+                        ));
+                        break;
+                    default:
+                        projectiles.push(new Projectile(
+                            this.x,
+                            this.y,
+                            target,
+                            this.damage
+                        ));
+                }
+            }
+
+            spawnSoldier() {
+                allies.push(new BarracksSoldier(
+                    this.spawnWaypoint.x,
+                    this.spawnWaypoint.y,
+                    {
+                        health: this.soldierHealth,
+                        damage: TOWER_TYPES.barracks.soldierDamage,
+                        speed: this.soldierSpeed
+                    }
+                ));
+            }
+
+            getSellValue() {
+                return Math.floor(TOWER_TYPES[this.type].cost * 0.7);
+            }
+        }
+
+        class BarracksSoldier {
+            constructor(x, y, stats) {
+                this.x = x;
+                this.y = y;
+                this.health = stats.health;
+                this.maxHealth = stats.health;
+                this.damage = stats.damage;
+                this.speed = stats.speed;
+                this.shouldDespawn = false;
+                this.waypointIndex = waypoints.length - 2;
+            }
+
+            draw() {
+                ctx.fillStyle = '#00FF00';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 8, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = 'red';
+                ctx.fillRect(this.x - 15, this.y - 15, 30, 3);
+                ctx.fillStyle = 'lime';
+                ctx.fillRect(this.x - 15, this.y - 15, 30 * (this.health/this.maxHealth), 3);
+            }
+
+            update(deltaTime) {
+                if (this.shouldDespawn) return;
+
+                const target = waypoints[this.waypointIndex];
+                const dx = target.x - this.x;
+                const dy = target.y - this.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < this.speed * deltaTime) {
+                    this.waypointIndex--;
+                    if (this.waypointIndex < 0) {
+                        this.shouldDespawn = true;
+                        return;
+                    }
+                } else {
+                    this.x += (dx / dist) * this.speed * deltaTime;
+                    this.y += (dy / dist) * this.speed * deltaTime;
+                }
+
+                for (const enemy of enemies) {
+                    const edx = enemy.x - this.x;
+                    const edy = enemy.y - this.y;
+                    if (Math.sqrt(edx*edx + edy*edy) < 18) {
+                        enemy.health -= this.damage;
+                        if (enemy.health <= 0) {
+                            money += enemy.bounty;
+                            moneySpan.textContent = money;
+                        }
+                        this.health -= 1;
+                        if (this.health <= 0) {
+                            this.shouldDespawn = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        class Projectile {
+            constructor(x, y, target, damage) {
+                this.x = x;
+                this.y = y;
+                this.target = target;
+                this.damage = damage;
+                this.speed = 400;
+                this.color = '#f1c40f';
+            }
+
+            update(deltaTime) {
+                const dx = this.target.x - this.x;
+                const dy = this.target.y - this.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < this.speed * deltaTime) {
+                    this.target.health -= this.damage;
+                    if (this.target.health <= 0) {
+                        money += this.target.bounty;
+                        moneySpan.textContent = money;
+                    }
+                    return true;
+                }
+                
+                this.x += (dx / dist) * this.speed * deltaTime;
+                this.y += (dy / dist) * this.speed * deltaTime;
+
+                if(Math.random() < 0.3) {
+                    particles.push(new Particle(
+                        this.x,
+                        this.y,
+                        {
+                            color: getVariedColor(this.color),
+                            size: 2,
+                            decay: 2.0,
+                            velocity: {
+                                x: (Math.random() - 0.5) * 200,
+                                y: (Math.random() - 0.5) * 200
+                            }
+                        }
+                    ));
+                }
+                return false;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        class RocketProjectile extends Projectile {
+            constructor(x, y, target, damage, blastRadius) {
+                super(x, y, target, damage);
+                this.blastRadius = blastRadius;
+                this.speed = 250;
+                this.color = '#e74c3c';
+            }
+
+            update(deltaTime) {
+                const result = super.update(deltaTime);
+                if (result) this.explode();
+                return result;
+            }
+
+            explode() {
+                enemies.forEach(enemy => {
+                    const dx = enemy.x - this.x;
+                    const dy = enemy.y - this.y;
+                    if (Math.sqrt(dx*dx + dy*dy) < this.blastRadius) {
+                        enemy.health -= this.damage;
+                        if (enemy.health <= 0) {
+                            money += enemy.bounty;
+                            moneySpan.textContent = money;
+                        }
+                    }
+                });
+
+                for(let i = 0; i < 15; i++) {
+                    particles.push(new Particle(
+                        this.x,
+                        this.y,
+                        {
+                            color: getVariedColor(this.color),
+                            size: 4,
+                            decay: 3.0,
+                            velocity: {
+                                x: (Math.random() - 0.5) * 300,
+                                y: (Math.random() - 0.5) * 300
+                            }
+                        }
+                    ));
+                }
+            }
+        }
+
+        class PiercingProjectile extends Projectile {
+            constructor(x, y, target, damage, pierceCount) {
+                super(x, y, target, damage);
+                this.remainingPierces = pierceCount;
+                this.speed = 500;
+                this.color = '#9b59b6';
+            }
+
+            update(deltaTime) {
+                const dx = this.target.x - this.x;
+                const dy = this.target.y - this.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < this.speed * deltaTime) {
+                    this.target.health -= this.damage;
+                    this.remainingPierces--;
+                    
+                    if (this.target.health <= 0) {
+                        money += this.target.bounty;
+                        moneySpan.textContent = money;
+                    }
+
+                    if (this.remainingPierces > 0) {
+                        this.target = this.findNewTarget();
+                        return false;
+                    }
+                    return true;
+                }
+                
+                this.x += (dx / dist) * this.speed * deltaTime;
+                this.y += (dy / dist) * this.speed * deltaTime;
+                return false;
+            }
+
+            findNewTarget() {
+                let closest = null;
+                let closestDistance = Infinity;
+                for (const enemy of enemies) {
+                    const distance = Math.hypot(enemy.x - this.x, enemy.y - this.y);
+                    if (distance < closestDistance) {
+                        closest = enemy;
+                        closestDistance = distance;
+                    }
+                }
+                return closest;
+            }
+        }
+
+        const ENEMY_TYPES = {
+            basic: { health: 10, speed: 100, bounty: 20, damage: 1, color: '#e74c3c' },
+            fast: { health: 5, speed: 200, bounty: 15, damage: 1, color: '#9b59b6' },
+            tank: { health: 30, speed: 60, bounty: 50, damage: 3, color: '#2c3e50' }
+        };
+
+        class Enemy {
+            constructor(type, wave) {
+                this.type = type;
+                this.waypointIndex = 0;
+                this.x = waypoints[0].x;
+                this.y = waypoints[0].y;
+                this.health = type.health * (1 + wave * 0.15); // 15% health increase per wave
+                this.maxHealth = this.health;
+                this.speed = type.speed;
+                this.bounty = type.bounty;
+                this.color = type.color;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 10, 0, Math.PI * 2);
+                ctx.fill();
+                
+                if (this === hoveredEnemy || this.health < this.maxHealth) {
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(this.x - 20, this.y - 20, 40, 3);
+                    ctx.fillStyle = 'lime';
+                    ctx.fillRect(this.x - 20, this.y - 20, 40 * (this.health/this.maxHealth), 3);
+                }
+            }
+
+            update(deltaTime) {
+                const target = waypoints[this.waypointIndex];
+                const dx = target.x - this.x;
+                const dy = target.y - this.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < this.speed * deltaTime) {
+                    this.waypointIndex++;
+                    if (this.waypointIndex >= waypoints.length) {
+                        health -= this.type.damage;
+                        healthSpan.textContent = health;
+                        return true;
+                    }
+                } else {
+                    this.x += (dx / dist) * this.speed * deltaTime;
+                    this.y += (dy / dist) * this.speed * deltaTime;
+                }
+                return false;
+            }
+        }
+
+        function spawnEnemy(type, wave) {
+            enemies.push(new Enemy(ENEMY_TYPES[type], wave);
+        }
+
+        function startWave() {
+            if (waveInProgress) return;
+            waveInProgress = true;
+            currentWave++;
+            waveSpan.textContent = currentWave;
+            
+            const waveEnemies = [];
+            const baseCount = 5 + currentWave * 3; // Increased enemy count scaling
+            const tankChance = Math.min(0.3 + currentWave * 0.02, 0.6);
+            const fastChance = Math.min(0.4 + currentWave * 0.03, 0.7);
+            
+            for (let i = 0; i < baseCount; i++) {
+                let type = 'basic';
+                if (Math.random() < tankChance) type = 'tank';
+                else if (Math.random() < fastChance) type = 'fast';
+                waveEnemies.push(type);
+            }
+            
+            let spawned = 0;
+            const spawnInterval = setInterval(() => {
+                if (spawned < waveEnemies.length) {
+                    spawnEnemy(waveEnemies[spawned], currentWave);
+                    spawned++;
+                } else {
+                    clearInterval(spawnInterval);
+                    waveInProgress = false;
+                    if (autoStartCheckbox.checked) {
+                        setTimeout(startWave, 3000);
+                    }
+                }
+            }, 1000 - Math.min(currentWave * 20, 800)); // Faster spawning as waves progress
+        }
+
+        function drawPath() {
+            ctx.strokeStyle = '#95a5a6';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(waypoints[0].x, waypoints[0].y);
+            waypoints.slice(1).forEach(wp => ctx.lineTo(wp.x, wp.y));
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function isValidPlacement(x, y) {
+            for (const wp of waypoints) {
+                if (Math.hypot(wp.x - x, wp.y - y) < 40) return false;
+            }
+            for (const tower of towers) {
+                if (Math.hypot(tower.x - x, tower.y - y) < 40) return false;
+            }
+            return true;
+        }
+
+        function showUpgradeMenu(tower, x, y) {
+            selectedTower = tower;
+            tower.selected = true;
+            
+            const base = TOWER_TYPES[tower.type];
+            let menuHTML = `<div>Tower Level: ${tower.getTotalLevel()}</div>`;
+
+            if(tower.type === 'barracks') {
+                menuHTML += `
+                    <div class="upgrade-option" data-upgrade="fireRate">
+                        Spawn Rate (Lv.${tower.level.fireRate}) - $${tower.upgradeCosts.fireRate}
+                    </div>
+                    <div class="upgrade-option" data-upgrade="soldierHealth">
+                        Soldier Health (Lv.${tower.level.soldierHealth}) - $${tower.upgradeCosts.soldierHealth}
+                    </div>
+                    <div class="upgrade-option" data-upgrade="soldierSpeed">
+                        Soldier Speed (Lv.${tower.level.soldierSpeed}) - $${tower.upgradeCosts.soldierSpeed}
+                    </div>
+                    <div class="upgrade-option" data-action="sell" style="color: #ff4444; border-color: #ff4444">
+                        Sell Tower - $${tower.getSellValue()}
+                    </div>
+                `;
+            } else {
+                const damageCost = base.upgradeCost * tower.level.damage;
+                const fireRateCost = base.upgradeCost * tower.level.fireRate;
+                const rangeCost = base.upgradeCost * tower.level.range;
+                menuHTML += `
+                    <div class="upgrade-option" data-upgrade="damage">
+                        Damage (Lv.${tower.level.damage}) - $${damageCost}
+                    </div>
+                    <div class="upgrade-option" data-upgrade="fireRate">
+                        Fire Rate (Lv.${tower.level.fireRate}) - $${fireRateCost}
+                    </div>
+                    <div class="upgrade-option" data-upgrade="range">
+                        Range (Lv.${tower.level.range}) - $${rangeCost}
+                    </div>
+                    <div class="upgrade-option" data-action="sell" style="color: #ff4444; border-color: #ff4444">
+                        Sell Tower - $${tower.getSellValue()}
+                    </div>
+                `;
+            }
+
+            upgradeMenu.innerHTML = menuHTML;
+            
+            upgradeMenu.style.display = 'block';
+            upgradeMenu.style.left = `${x}px`;
+            upgradeMenu.style.top = `${y}px`;
+
+            document.querySelectorAll('.upgrade-option').forEach(option => {
+                option.addEventListener('click', (e) => {
+                    if (e.target.dataset.action === 'sell') {
+                        const index = towers.indexOf(tower);
+                        if (index > -1) {
+                            towers.splice(index, 1);
+                            money += tower.getSellValue();
+                            moneySpan.textContent = money;
+                        }
+                        upgradeMenu.style.display = 'none';
+                        selectedTower = null;
+                    } else {
+                        const stat = e.target.dataset.upgrade;
+                        let cost = 0;
+                        
+                        if(tower.type === 'barracks') {
+                            cost = tower.upgradeCosts[stat];
+                        } else {
+                            cost = base.upgradeCost * tower.level[stat];
+                        }
+
+                        if (money >= cost) {
+                            money -= cost;
+                            tower.level[stat]++;
+                            tower.updateStats();
+                            moneySpan.textContent = money;
+                            showUpgradeMenu(tower, x, y);
+                        }
+                    }
+                });
+            });
+        }
+
+        // Developer functions
+        function addMoney() {
+            const amount = parseInt(document.getElementById('devMoney').value);
+            money += amount;
+            moneySpan.textContent = money;
+        }
+
+        function setMoney() {
+            const amount = parseInt(document.getElementById('devMoney').value);
+            money = amount;
+            moneySpan.textContent = money;
+        }
+
+        function setWave() {
+            const wave = parseInt(document.getElementById('devWave').value);
+            currentWave = wave - 1;
+            waveSpan.textContent = currentWave;
+        }
+
+        function healBase() {
+            health = 100;
+            healthSpan.textContent = health;
+        }
+
+        function toggleDevGUI() {
+            devGUI.style.display = devGUI.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function update(deltaTime) {
+            if (isPaused) return;
+
+            for(let i = particles.length-1; i >= 0; i--) {
+                particles[i].update(deltaTime);
+                if(particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            for (let i = enemies.length-1; i >= 0; i--) {
+                if (enemies[i].update(deltaTime)) {
+                    enemies.splice(i, 1);
+                } else if (enemies[i].health <= 0) {
+                    money += enemies[i].bounty;
+                    moneySpan.textContent = money;
+                    enemies.splice(i, 1);
+                }
+            }
+
+            towers.forEach(tower => tower.update(deltaTime));
+
+            for (let i = projectiles.length-1; i >= 0; i--) {
+                if (projectiles[i].update(deltaTime)) {
+                    projectiles.splice(i, 1);
+                }
+            }
+
+            for (let i = allies.length - 1; i >= 0; i--) {
+                allies[i].update(deltaTime);
+                if (allies[i].shouldDespawn || allies[i].health <= 0) {
+                    allies.splice(i, 1);
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            drawPath();
+            
+            particles.forEach(p => p.draw());
+            
+            towers.forEach(tower => {
+                tower.draw();
+                if (tower.selected) {
+                    ctx.strokeStyle = 'rgba(0, 255, 0, 0.2)';
+                    ctx.beginPath();
+                    ctx.arc(tower.x, tower.y, tower.range, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            });
+
+            enemies.forEach(enemy => enemy.draw());
+            projectiles.forEach(p => p.draw());
+            allies.forEach(ally => ally.draw());
+
+            if (placingTower && hoveredTile) {
+                ctx.fillStyle = isValidPlacement(hoveredTile.x, hoveredTile.y) ? 
+                    'rgba(52, 152, 219, 0.5)' : 'rgba(231, 76, 60, 0.5)';
+                ctx.beginPath();
+                ctx.arc(hoveredTile.x, hoveredTile.y, 15, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Event listeners
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            hoveredTile = { x, y };
+            hoveredEnemy = enemies.find(enemy => 
+                Math.hypot(enemy.x - x, enemy.y - y) < 15
+            );
+        });
+
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            if (placingTower) {
+                if (isValidPlacement(x, y) && money >= placingTower.cost) {
+                    towers.push(new Tower(x, y, placingTower.type));
+                    money -= placingTower.cost;
+                    moneySpan.textContent = money;
+                    placingTower = null;
+                }
+                return;
+            }
+
+            let clickedTower = null;
+            for (const tower of towers) {
+                if (Math.hypot(tower.x - x, tower.y - y) < 15) {
+                    clickedTower = tower;
+                    break;
+                }
+            }
+
+            if (clickedTower) {
+                if (selectedTower) selectedTower.selected = false;
+                showUpgradeMenu(clickedTower, e.clientX, e.clientY);
+            } else {
+                upgradeMenu.style.display = 'none';
+                if (selectedTower) selectedTower.selected = false;
+                selectedTower = null;
+            }
+        });
+
+        document.getElementById('startWave').addEventListener('click', startWave);
+        document.getElementById('pause').addEventListener('click', () => {
+            isPaused = !isPaused;
+            document.getElementById('pause').textContent = isPaused ? 'Resume' : 'Pause';
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === '1') {
+                placingTower = { type: 'basic', ...TOWER_TYPES.basic };
+                upgradeMenu.style.display = 'none';
+            }
+            if (e.key === '2') {
+                placingTower = { type: 'sniper', ...TOWER_TYPES.sniper };
+                upgradeMenu.style.display = 'none';
+            }
+            if (e.key === '3') {
+                placingTower = { type: 'rocket', ...TOWER_TYPES.rocket };
+                upgradeMenu.style.display = 'none';
+            }
+            if (e.key === '4') {
+                placingTower = { type: 'piercing', ...TOWER_TYPES.piercing };
+                upgradeMenu.style.display = 'none';
+            }
+            if (e.key === '5') {
+                placingTower = { type: 'barracks', ...TOWER_TYPES.barracks };
+                upgradeMenu.style.display = 'none';
+            }
+            if (e.key === 'Escape') {
+                placingTower = null;
+                upgradeMenu.style.display = 'none';
+                if (selectedTower) selectedTower.selected = false;
+                selectedTower = null;
+            }
+            if (e.key.toLowerCase() === 'o') {
+                toggleDevGUI();
+            }
+        });
+
+        // Game loop
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            const deltaTime = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+            
+            update(deltaTime);
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
